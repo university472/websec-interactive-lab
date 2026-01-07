@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,17 +7,115 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
-import { Shield, AlertTriangle, CheckCircle2, XCircle, Lightbulb } from 'lucide-react';
+import { Shield, AlertTriangle, CheckCircle2, XCircle, Lightbulb, ArrowRight, Loader2 } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/hooks/useAuth';
+import { toast } from 'sonner';
 
 export default function Lab() {
   const { slug } = useParams();
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [isSecureMode, setIsSecureMode] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showHint, setShowHint] = useState(false);
+  const [module, setModule] = useState<{ id: string; title: string } | null>(null);
+  const [nextModule, setNextModule] = useState<{ slug: string; title: string } | null>(null);
+  const [isCompleted, setIsCompleted] = useState(false);
+  const [isCompleting, setIsCompleting] = useState(false);
 
-  const isSqlInjectionLab = slug?.includes('sql');
+  useEffect(() => {
+    async function fetchModuleData() {
+      if (!slug) return;
+
+      // Fetch current module
+      const { data: moduleData } = await supabase
+        .from('modules')
+        .select('id, title, order_index')
+        .eq('slug', slug)
+        .maybeSingle();
+
+      if (moduleData) {
+        setModule({ id: moduleData.id, title: moduleData.title });
+
+        // Fetch next module
+        const { data: nextModuleData } = await supabase
+          .from('modules')
+          .select('slug, title')
+          .eq('is_active', true)
+          .gt('order_index', moduleData.order_index)
+          .order('order_index', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (nextModuleData) {
+          setNextModule(nextModuleData);
+        }
+
+        // Check if already completed
+        if (user) {
+          const { data: progressData } = await supabase
+            .from('user_progress')
+            .select('status')
+            .eq('user_id', user.id)
+            .eq('module_id', moduleData.id)
+            .maybeSingle();
+
+          if (progressData?.status === 'completed') {
+            setIsCompleted(true);
+          }
+        }
+      }
+    }
+
+    fetchModuleData();
+  }, [slug, user]);
+
+  const markModuleComplete = async () => {
+    if (!user || !module) return;
+    
+    setIsCompleting(true);
+    try {
+      // Check if progress record exists
+      const { data: existingProgress } = await supabase
+        .from('user_progress')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('module_id', module.id)
+        .maybeSingle();
+
+      if (existingProgress) {
+        // Update existing record
+        await supabase
+          .from('user_progress')
+          .update({
+            status: 'completed',
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', existingProgress.id);
+      } else {
+        // Create new record
+        await supabase
+          .from('user_progress')
+          .insert({
+            user_id: user.id,
+            module_id: module.id,
+            status: 'completed',
+            started_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+          });
+      }
+
+      setIsCompleted(true);
+      toast.success('Module completed! 🎉');
+    } catch (error) {
+      toast.error('Failed to save progress');
+    } finally {
+      setIsCompleting(false);
+    }
+  };
 
   const handleLogin = () => {
     if (isSecureMode) {
@@ -154,6 +252,58 @@ export default function Lab() {
                   )}
                   <p className="text-sm font-medium">{result.message}</p>
                 </div>
+              )}
+
+              {/* Complete Module Button - show when attack succeeds */}
+              {result?.success && !isCompleted && user && (
+                <Button 
+                  onClick={markModuleComplete} 
+                  className="w-full gap-2"
+                  disabled={isCompleting}
+                >
+                  {isCompleting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-4 w-4" />
+                      Mark as Complete
+                    </>
+                  )}
+                </Button>
+              )}
+
+              {/* Already completed status */}
+              {isCompleted && (
+                <div className="bg-success/10 border border-success/20 rounded-lg p-4 text-center">
+                  <CheckCircle2 className="h-6 w-6 text-success mx-auto mb-2" />
+                  <p className="font-medium text-success">Module Completed!</p>
+                </div>
+              )}
+
+              {/* Next Module Button */}
+              {isCompleted && nextModule && (
+                <Button 
+                  onClick={() => navigate(`/lab/${nextModule.slug}`)} 
+                  className="w-full gap-2"
+                >
+                  Next: {nextModule.title}
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              )}
+
+              {/* All Done - show certificate link */}
+              {isCompleted && !nextModule && (
+                <Button 
+                  onClick={() => navigate('/certificate')} 
+                  className="w-full gap-2"
+                  variant="outline"
+                >
+                  View Certificate
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
               )}
             </CardContent>
           </Card>
